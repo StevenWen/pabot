@@ -29,8 +29,8 @@ class _PabotLib(object):
     def __init__(self, resourcefile=None):
         self._locks = {}
         self._owner_to_values = {}
+        self._parallel_values = {}
         self._values = self._parse_values(resourcefile)
-        self.cntlm = CntlmManager()
 
     def _parse_values(self, resourcefile):
         vals = {}
@@ -41,6 +41,12 @@ class _PabotLib(object):
         for section in conf.sections():
             vals[section] = dict((k,conf.get(section, k)) for k in conf.options(section))
         return vals
+
+    def set_parallel_value_for_key(self, key, value):
+        self._parallel_values[key] = value
+
+    def get_parallel_value_for_key(self, key):
+        return self._parallel_values.get(key, "")
 
     def acquire_lock(self, name, caller_id):
         if name in self._locks and caller_id != self._locks[name][0]:
@@ -56,10 +62,8 @@ class _PabotLib(object):
         if self._locks[name][1] == 0:
             del self._locks[name]
 
-    def acquire_value_set(self, caller_id, valueset):
+    def acquire_value_set(self, caller_id):
         for k in self._values:
-            if valueset and k != valueset:
-                continue
             if self._values[k] not in self._owner_to_values.values():
                 self._owner_to_values[caller_id] = self._values[k]
                 return k
@@ -78,10 +82,9 @@ class _PabotLib(object):
         return self.cntlm.connect_proxy(proxy, domain, username, password)
 
 
-
 class PabotLib(_PabotLib):
 
-    __version__ = 0.11
+    __version__ = 0.13
     ROBOT_LIBRARY_SCOPE = 'GLOBAL'
 
     def __init__(self):
@@ -97,9 +100,50 @@ class PabotLib(_PabotLib):
             self.__remotelib = Remote(uri) if uri else None
         return self.__remotelib
 
-    def connect_proxy(self, proxy, domain, username, password):
-        port = self._remotelib.run_keyword('connect_proxy', [proxy, domain, username, password, self._my_id], {})
-        return port
+    def run_only_once(self, keyword):
+        """
+        This is an *experimental* keyword for building setups that should be executed only once.
+        As the keyword will be called only in one process and the return value could basically be anything.
+        The "Run Only Once" can't return the actual value.
+        If the keyword fails, "Run Only Once" fails.
+        Others executing "Run Only Once" wait before going through this keyword before the actual command has been executed.
+        NOTE! This is a potential "Shoot yourself in to knee" keyword
+        Especially note that all the namespace changes are only visible in the process that actually executed the keyword.
+        Also note that this might lead to odd situations if used inside of other keywords.
+        Also at this point the keyword will be identified to be same if it has the same name.
+        """
+        lock_name = 'pabot_run_only_once_%s' % keyword
+        try:
+            self.acquire_lock(lock_name)
+            passed = self.get_parallel_value_for_key(lock_name)
+            if passed != '':
+                if passed == 'FAILED':
+                    raise AssertionError('Keyword failed in other process')
+                return
+            BuiltIn().run_keyword(keyword)
+            self.set_parallel_value_for_key(lock_name, 'PASSED')
+        except:
+            self.set_parallel_value_for_key(lock_name, 'FAILED')
+            raise
+        finally:
+            self.release_lock(lock_name)
+
+    def set_parallel_value_for_key(self, key, value):
+        """
+        Set a globally available key and value that can be accessed from all the pabot processes.
+        """
+        if self._remotelib:
+            self._remotelib.run_keyword('set_parallel_value_for_key', [key, value], {})
+        else:
+            _PabotLib.set_parallel_value_for_key(self, key, value)
+
+    def get_parallel_value_for_key(self, key):
+        """
+        Get the value for a key. If there is no value for the key then empty string is returned.
+        """
+        if self._remotelib:
+            return self._remotelib.run_keyword('get_parallel_value_for_key', [key], {})
+        return _PabotLib.get_parallel_value_for_key(self, key)
 
     def acquire_lock(self, name):
         """
@@ -129,7 +173,7 @@ class PabotLib(_PabotLib):
         else:
             _PabotLib.release_lock(self, name, self._my_id)
 
-    def acquire_value_set(self, valueset=None):
+    def acquire_value_set(self):
         """
         Reserve a set of values for this execution.
         No other process can reserve the same set of values while the set is reserved.
@@ -139,7 +183,7 @@ class PabotLib(_PabotLib):
         if self._remotelib:
             try:
                 while True:
-                    value = self._remotelib.run_keyword('acquire_value_set', [self._my_id, valueset], {})
+                    value = self._remotelib.run_keyword('acquire_value_set', [self._my_id], {})
                     if value:
                         logger.info('Value set "%s" acquired' % value)
                         return value
@@ -176,5 +220,4 @@ class PabotLib(_PabotLib):
 
 if __name__ == '__main__':
     import sys
-    RobotRemoteServer(_PabotLib(sys.argv[1]))
-    
+    RobotRemoteServer(_PabotLib(sys.argv[1]), allow_stop=True)

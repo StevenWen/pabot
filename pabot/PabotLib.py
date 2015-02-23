@@ -31,6 +31,7 @@ class _PabotLib(object):
         self._owner_to_values = {}
         self._parallel_values = {}
         self._values = self._parse_values(resourcefile)
+        self.cntlm = CntlmManager()
 
     def _parse_values(self, resourcefile):
         vals = {}

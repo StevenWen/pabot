@@ -281,7 +281,7 @@ def _start_message_writer():
 def _start_remote_library(pabot_args):
     if not pabot_args['pabotlib']:
         return None
-    return subprocess.Popen('python %s %s' % (os.path.abspath(PabotLib.__file__),
+    return subprocess.Popen('python2.7 %s %s' % (os.path.abspath(PabotLib.__file__),
                                               pabot_args.get('resourcefile', 'N/A')),
                             shell=True)
 
